@@ -9,12 +9,9 @@ from collections import Counter
 import statistics
 from datetime import timedelta
 from datetime import datetime
-from tabulate import tabulate
-import numpy as np
 import time as time_module
-import pandas as pd
 from difflib import SequenceMatcher
-from utils import safe_float,format_epoch_human_relative,load_csv_for_cluster,format_seconds_human
+from .utils import *
 
 def _ensure_cluster_data(cluster_id, logger):
     """
@@ -223,13 +220,7 @@ class Histogram(Verb):
     def load_data_for_cluster(cluster_id):
         """Load cluster CSV and return a cleaned DataFrame."""
         jobs = load_csv_for_cluster(cluster_id)
-        df = pd.DataFrame(jobs)
-
-        for col in ["RemoteWallClockTime", "QDate", "CompletionDate"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        return df
+        return make_dataframe(jobs, numeric_cols=["RemoteWallClockTime", "QDate", "CompletionDate"])
 
 
     def get_positive_runtimes(df):
@@ -259,11 +250,11 @@ class Histogram(Verb):
         if rt is None:
             return
 
-        runtimes = np.sort(rt.values)
+        runtimes = sorted(rt.values)
         n = len(runtimes)
 
         marker_pcts = [25, 50, 75, 90, 95]
-        marker_times = {p: float(np.percentile(runtimes, p)) for p in marker_pcts}
+        marker_times = {p: float(np_percentile(runtimes, p)) for p in marker_pcts}
 
         x_max = float(runtimes[-1])
         plot = [[" " for _ in range(width)] for _ in range(height)]
@@ -271,7 +262,7 @@ class Histogram(Verb):
         prev_y = height - 1
         for x in range(width):
             rt_at_x = (x / (width - 1)) * x_max if width > 1 else x_max
-            cum_pct = float(np.searchsorted(runtimes, rt_at_x, side="right")) / n
+            cum_pct = float(np_searchsorted(runtimes, rt_at_x)) / n
             y = int((1.0 - cum_pct) * (height - 1))
             y = max(0, min(height - 1, y))
 
@@ -359,16 +350,16 @@ class Histogram(Verb):
             return
 
         runtimes = rt.values
-        percentiles_list = np.linspace(0, 100, percentiles + 1)
-        raw_edges = np.percentile(runtimes, percentiles_list)
-        bin_edges = np.unique(raw_edges)
+        percentiles_list = np_linspace(0, 100, percentiles + 1)
+        raw_edges = np_percentile(runtimes, percentiles_list)
+        bin_edges = np_unique(raw_edges)
 
         if len(bin_edges) < 2:
             print("[WARN] Not enough unique runtime values to build histogram.")
             return
 
-        counts, _ = np.histogram(runtimes, bins=bin_edges)
-        max_count = counts.max() if len(counts) > 0 else 0
+        counts, _ = np_histogram(runtimes, bins=bin_edges)
+        max_count = max(counts) if len(counts) > 0 else 0
 
         print(f"\n  {'Histogram by Percentile':^80}")
         print(f"  {'-' * 80}")
@@ -433,10 +424,10 @@ class Histogram(Verb):
         if show_fast_jobs:
             if "ClusterId" in df.columns and "ProcId" in df.columns:
                 fast_mask = df["RemoteWallClockTime"].fillna(-1) < 600
-                fast_jobs = df.loc[fast_mask, ["ClusterId", "ProcId"]].dropna()
+                fast_jobs = df.loc(fast_mask, ["ClusterId", "ProcId"]).dropna()
 
                 fast_job_ids = [
-                    f"{int(r)}.{int(p)}" if pd.notna(r) and pd.notna(p) else f"{r}.{p}"
+                    f"{int(r)}.{int(p)}" if notna(r) and notna(p) else f"{r}.{p}"
                     for r, p in zip(fast_jobs["ClusterId"], fast_jobs["ProcId"])
                 ]
 
@@ -460,10 +451,7 @@ class Histogram(Verb):
         if not jobs:
             return None
 
-        df = pd.DataFrame(jobs)
-        for col in ["RemoteWallClockTime", "QDate", "CompletionDate"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = make_dataframe(jobs, numeric_cols=["RemoteWallClockTime", "QDate", "CompletionDate"])
 
         if "RemoteWallClockTime" not in df.columns:
             return None
@@ -474,12 +462,12 @@ class Histogram(Verb):
             return None
 
         runtimes = rt.values
-        p95 = np.percentile(runtimes, 95)
+        p95 = np_percentile(runtimes, 95)
 
-        qdate_series = df["QDate"].dropna() if "QDate" in df.columns else pd.Series(dtype=float)
+        qdate_series = df["QDate"].dropna() if "QDate" in df.columns else Series([])
         completion_series = (
             df["CompletionDate"].dropna()
-            if "CompletionDate" in df.columns else pd.Series(dtype=float)
+            if "CompletionDate" in df.columns else Series([])
         )
 
         return {
@@ -489,7 +477,7 @@ class Histogram(Verb):
             "std_runtime": rt.std(),
             "cv": rt.std() / rt.mean() if rt.mean() > 0 else 0,
             "fast_jobs": int((runtimes < 600).sum()),
-            "fast_jobs_pct": float((runtimes < 600).mean() * 100),
+            "fast_jobs_pct": float(sum(1 for v in runtimes if v < 600) / len(runtimes) * 100),
             "long_jobs": int((runtimes > p95).sum()),
             "p95_runtime": p95,
             "min_runtime": rt.min(),
@@ -508,10 +496,10 @@ class Histogram(Verb):
         rt = Histogram.get_positive_runtimes(df)
         n = len(rt) if rt is not None else 0
 
-        submit_times = df["QDate"].dropna() if "QDate" in df.columns else pd.Series(dtype=float)
+        submit_times = df["QDate"].dropna() if "QDate" in df.columns else Series([])
         completion_times = (
             df["CompletionDate"].dropna()
-            if "CompletionDate" in df.columns else pd.Series(dtype=float)
+            if "CompletionDate" in df.columns else Series([])
         )
 
         first_sub = (
@@ -725,7 +713,7 @@ class Analytics(Verb):
 
     # prints the total report
     def summarize(cluster_id):
-        jobs = Analytics.load_csv_for_cluster(cluster_id)
+        jobs = load_csv_for_cluster(cluster_id)
 
         mem_requested, mem_used = [], []
         disk_requested, disk_used = [], []
@@ -1227,8 +1215,8 @@ class Hold(Verb):
         current_time = time_module.time()
         
         print("⏱️  Time Analysis:")
-        print(f"  First held: {datetime.datetime.fromtimestamp(earliest).strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"  Last held:  {datetime.datetime.fromtimestamp(latest).strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  First held: {datetime.fromtimestamp(earliest).strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  Last held:  {datetime.fromtimestamp(latest).strftime('%Y-%m-%d %H:%M:%S')}")
         duration_hours = (latest - earliest) / 3600
         print(f"  Duration:   {duration_hours:.1f} hours")
         
